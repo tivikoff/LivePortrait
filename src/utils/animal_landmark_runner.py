@@ -28,6 +28,7 @@ class XPoseRunner(object):
         self.flag_use_half_precision = kwargs.get("flag_use_half_precision", True)
         self.device = f"cuda:{self.device_id}" if not cpu_only else "cpu"
         self.model = self.load_animal_model(model_config_path, model_checkpoint_path, self.device)
+        self.model = self.model.to(self.device)
         self.timer = Timer()
         # Load cached embeddings if available
         try:
@@ -58,7 +59,7 @@ class XPoseRunner(object):
         image, _ = transform(image_pil, None)
         return image_pil, image
 
-    def get_unipose_output(self, image, instance_text_prompt, keypoint_text_prompt, box_threshold, IoU_threshold):
+    def get_unipose_output(self, image, instance_text_prompt, keypoint_text_prompt, box_threshold=0.1, IoU_threshold=0.3):
         instance_list = instance_text_prompt.split(',')
 
         if len(keypoint_text_prompt) == 9:
@@ -77,7 +78,6 @@ class XPoseRunner(object):
             "kpt_vis_text": torch.cat((torch.ones(kpt_text_embeddings.shape[0], device=self.device), torch.zeros(100 - kpt_text_embeddings.shape[0], device=self.device)), dim=0)
         }
 
-        self.model = self.model.to(self.device)
         image = image.to(self.device)
 
         with torch.no_grad():
@@ -103,7 +103,7 @@ class XPoseRunner(object):
 
         return filtered_boxes, filtered_keypoints
 
-    def run(self, input_image, instance_text_prompt, keypoint_text_example, box_threshold, IoU_threshold):
+    def run(self, input_image, instance_text_prompt, keypoint_text_example, box_threshold=0.1, IoU_threshold=0.3):
         if keypoint_text_example in globals():
             keypoint_dict = globals()[keypoint_text_example]
         elif instance_text_prompt in globals():
