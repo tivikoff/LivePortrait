@@ -16,7 +16,6 @@ from rich.progress import track
 from .config.argument_config import ArgumentConfig
 from .config.inference_config import InferenceConfig
 from .config.crop_config import CropConfig
-from .utils.cropper import Cropper
 from .utils.camera import get_rotation_matrix
 from .utils.video import images2video, concat_frames, get_fps, add_audio_to_video, has_audio_stream
 from .utils.crop import prepare_paste_back, paste_back
@@ -26,6 +25,14 @@ from .utils.filter import smooth
 from .utils.rprint import rlog as log
 # from .utils.viz import viz_lmk
 from .live_portrait_wrapper import LivePortraitWrapper
+from .utils.human_crop import (
+    create_crop_helpers,
+    crop_source_image,
+    crop_source_video,
+    crop_driving_video,
+    calc_lmk_from_cropped_image,
+    calc_lmks_from_cropped_video,
+)
 
 
 def make_abs_path(fn):
@@ -36,7 +43,13 @@ class LivePortraitPipeline(object):
 
     def __init__(self, inference_cfg: InferenceConfig, crop_cfg: CropConfig):
         self.live_portrait_wrapper: LivePortraitWrapper = LivePortraitWrapper(inference_cfg=inference_cfg)
-        self.cropper: Cropper = Cropper(crop_cfg=crop_cfg)
+        self.crop_cfg = crop_cfg
+        self.face_analyzer, self.landmark_runner = create_crop_helpers(crop_cfg)
+
+    def update_crop_config(self, user_args):
+        for k, v in user_args.items():
+            if hasattr(self.crop_cfg, k):
+                setattr(self.crop_cfg, k, v)
 
     def make_motion_template(self, I_lst, c_eyes_lst, c_lip_lst, **kwargs):
         n_frames = I_lst.shape[0]
@@ -78,7 +91,7 @@ class LivePortraitPipeline(object):
         # for convenience
         inf_cfg = self.live_portrait_wrapper.inference_cfg
         device = self.live_portrait_wrapper.device
-        crop_cfg = self.cropper.crop_cfg
+        crop_cfg = self.crop_cfg
 
         ######## load source input ########
         flag_is_source_video = False
@@ -151,14 +164,14 @@ class LivePortraitPipeline(object):
             else:
                 n_frames = driving_n_frames
             if inf_cfg.flag_crop_driving_video or (not is_square_video(args.driving)):
-                ret_d = self.cropper.crop_driving_video(driving_rgb_lst)
+                ret_d = crop_driving_video(driving_rgb_lst, crop_cfg, self.face_analyzer, self.landmark_runner)
                 log(f'Driving video is cropped, {len(ret_d["frame_crop_lst"])} frames are processed.')
                 if len(ret_d["frame_crop_lst"]) is not n_frames and flag_is_driving_video:
                     n_frames = min(n_frames, len(ret_d["frame_crop_lst"]))
                 driving_rgb_crop_lst, driving_lmk_crop_lst = ret_d['frame_crop_lst'], ret_d['lmk_crop_lst']
                 driving_rgb_crop_256x256_lst = [cv2.resize(_, (256, 256)) for _ in driving_rgb_crop_lst]
             else:
-                driving_lmk_crop_lst = self.cropper.calc_lmks_from_cropped_video(driving_rgb_lst)
+                driving_lmk_crop_lst = calc_lmks_from_cropped_video(driving_rgb_lst, self.face_analyzer, self.landmark_runner, crop_cfg)
                 driving_rgb_crop_256x256_lst = [cv2.resize(_, (256, 256)) for _ in driving_rgb_lst]  # force to resize to 256x256
             #######################################
 
@@ -194,13 +207,13 @@ class LivePortraitPipeline(object):
 
             source_rgb_lst = source_rgb_lst[:n_frames]
             if inf_cfg.flag_do_crop:
-                ret_s = self.cropper.crop_source_video(source_rgb_lst, crop_cfg)
+                ret_s = crop_source_video(source_rgb_lst, crop_cfg, self.face_analyzer, self.landmark_runner)
                 log(f'Source video is cropped, {len(ret_s["frame_crop_lst"])} frames are processed.')
                 if len(ret_s["frame_crop_lst"]) is not n_frames:
                     n_frames = min(n_frames, len(ret_s["frame_crop_lst"]))
                 img_crop_256x256_lst, source_lmk_crop_lst, source_M_c2o_lst = ret_s['frame_crop_lst'], ret_s['lmk_crop_lst'], ret_s['M_c2o_lst']
             else:
-                source_lmk_crop_lst = self.cropper.calc_lmks_from_cropped_video(source_rgb_lst)
+                source_lmk_crop_lst = calc_lmks_from_cropped_video(source_rgb_lst, self.face_analyzer, self.landmark_runner, crop_cfg)
                 img_crop_256x256_lst = [cv2.resize(_, (256, 256)) for _ in source_rgb_lst]  # force to resize to 256x256
 
             c_s_eyes_lst, c_s_lip_lst = self.live_portrait_wrapper.calc_ratio(source_lmk_crop_lst)
@@ -240,13 +253,13 @@ class LivePortraitPipeline(object):
 
         else:  # if the input is a source image, process it only once
             if inf_cfg.flag_do_crop:
-                crop_info = self.cropper.crop_source_image(source_rgb_lst[0], crop_cfg)
+                crop_info = crop_source_image(source_rgb_lst[0], crop_cfg, self.face_analyzer, self.landmark_runner)
                 if crop_info is None:
                     raise Exception("No face detected in the source image!")
                 source_lmk = crop_info['lmk_crop']
                 img_crop_256x256 = crop_info['img_crop_256x256']
             else:
-                source_lmk = self.cropper.calc_lmk_from_cropped_image(source_rgb_lst[0])
+                source_lmk = calc_lmk_from_cropped_image(source_rgb_lst[0], self.face_analyzer, self.landmark_runner, crop_cfg)
                 img_crop_256x256 = cv2.resize(source_rgb_lst[0], (256, 256))  # force to resize to 256x256
             I_s = self.live_portrait_wrapper.prepare_source(img_crop_256x256)
             x_s_info = self.live_portrait_wrapper.get_kp_info(I_s)
