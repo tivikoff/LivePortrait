@@ -23,6 +23,13 @@ from .utils.camera import get_rotation_matrix
 from .utils.video import get_fps, has_audio_stream, concat_frames, images2video, add_audio_to_video
 from .utils.helper import is_square_video, mkdir, dct2device, basename
 from .utils.retargeting_utils import calc_eye_close_ratio, calc_lip_close_ratio
+from .utils.human_crop import (
+    crop_source_image as crop_source_image_h,
+    crop_source_video as crop_source_video_h,
+    crop_driving_video as crop_driving_video_h,
+    calc_lmk_from_cropped_image as calc_lmk_from_cropped_image_h,
+    calc_lmks_from_cropped_video as calc_lmks_from_cropped_video_h,
+)
 
 
 def update_args(args, user_args):
@@ -216,7 +223,7 @@ class GradioPipeline(LivePortraitPipeline):
             # update config from user input
             self.args = update_args(self.args, args_user)
             self.live_portrait_wrapper.update_config(self.args.__dict__)
-            self.cropper.update_config(self.args.__dict__)
+            self.update_crop_config(self.args.__dict__)
 
             output_path, output_path_concat = self.execute(self.args)
             gr.Info("Run successfully!", duration=2)
@@ -345,19 +352,19 @@ class GradioPipeline(LivePortraitPipeline):
             # gr.Info("Upload successfully!", duration=2)
             args_user = {'scale': retargeting_source_scale}
             self.args = update_args(self.args, args_user)
-            self.cropper.update_config(self.args.__dict__)
+            self.update_crop_config(self.args.__dict__)
             inference_cfg = self.live_portrait_wrapper.inference_cfg
             ######## process source portrait ########
             img_rgb = load_img_online(input_image, mode='rgb', max_dim=1280, n=2)
             if flag_do_crop:
-                crop_info = self.cropper.crop_source_image(img_rgb, self.cropper.crop_cfg)
+                crop_info = crop_source_image_h(img_rgb, self.crop_cfg, self.face_analyzer, self.landmark_runner)
                 I_s = self.live_portrait_wrapper.prepare_source(crop_info['img_crop_256x256'])
                 source_lmk_user = crop_info['lmk_crop']
                 crop_M_c2o = crop_info['M_c2o']
                 mask_ori = prepare_paste_back(inference_cfg.mask_crop, crop_info['M_c2o'], dsize=(img_rgb.shape[1], img_rgb.shape[0]))
             else:
                 I_s = self.live_portrait_wrapper.prepare_source(img_rgb)
-                source_lmk_user = self.cropper.calc_lmk_from_cropped_image(img_rgb)
+                source_lmk_user = calc_lmk_from_cropped_image_h(img_rgb, self.face_analyzer, self.landmark_runner, self.crop_cfg)
                 crop_M_c2o = None
                 mask_ori = None
             x_s_info = self.live_portrait_wrapper.get_kp_info(I_s)
@@ -380,12 +387,12 @@ class GradioPipeline(LivePortraitPipeline):
         if input_image != None:
             args_user = {'scale': retargeting_source_scale}
             self.args = update_args(self.args, args_user)
-            self.cropper.update_config(self.args.__dict__)
+            self.update_crop_config(self.args.__dict__)
             # inference_cfg = self.live_portrait_wrapper.inference_cfg
             ######## process source portrait ########
             img_rgb = load_img_online(input_image, mode='rgb', max_dim=1280, n=16)
             log(f"Load source image from {input_image}.")
-            crop_info = self.cropper.crop_source_image(img_rgb, self.cropper.crop_cfg)
+            crop_info = crop_source_image_h(img_rgb, self.crop_cfg, self.face_analyzer, self.landmark_runner)
             if crop_info is None:
                 raise gr.Error("Source portrait NO face detected", duration=2)
             source_eye_ratio = calc_eye_close_ratio(crop_info['lmk_crop'][None])
@@ -492,7 +499,7 @@ class GradioPipeline(LivePortraitPipeline):
             # gr.Info("Upload successfully!", duration=2)
             args_user = {'scale': retargeting_source_scale}
             self.args = update_args(self.args, args_user)
-            self.cropper.update_config(self.args.__dict__)
+            self.update_crop_config(self.args.__dict__)
             inference_cfg = self.live_portrait_wrapper.inference_cfg
             ######## process source video ########
             source_rgb_lst = load_video(input_video)
@@ -502,14 +509,14 @@ class GradioPipeline(LivePortraitPipeline):
             log(f"Load source video from {input_video}. FPS is {source_fps}")
 
             if flag_do_crop:
-                ret_s = self.cropper.crop_source_video(source_rgb_lst, self.cropper.crop_cfg)
+                ret_s = crop_source_video_h(source_rgb_lst, self.crop_cfg, self.face_analyzer, self.landmark_runner)
                 log(f'Source video is cropped, {len(ret_s["frame_crop_lst"])} frames are processed.')
                 if len(ret_s["frame_crop_lst"]) != n_frames:
                     n_frames = min(len(source_rgb_lst), len(ret_s["frame_crop_lst"]))
                 img_crop_256x256_lst, source_lmk_crop_lst, source_M_c2o_lst = ret_s['frame_crop_lst'], ret_s['lmk_crop_lst'], ret_s['M_c2o_lst']
                 mask_ori_lst = [prepare_paste_back(inference_cfg.mask_crop, source_M_c2o, dsize=(source_rgb_lst[0].shape[1], source_rgb_lst[0].shape[0])) for source_M_c2o in source_M_c2o_lst]
             else:
-                source_lmk_crop_lst = self.cropper.calc_lmks_from_cropped_video(source_rgb_lst)
+                source_lmk_crop_lst = calc_lmks_from_cropped_video_h(source_rgb_lst, self.face_analyzer, self.landmark_runner, self.crop_cfg)
                 img_crop_256x256_lst = [cv2.resize(_, (256, 256)) for _ in source_rgb_lst]  # force to resize to 256x256
                 source_M_c2o_lst, mask_ori_lst = None, None
 
@@ -554,14 +561,14 @@ class GradioPipeline(LivePortraitPipeline):
             log(f"Load source video from {input_video}. FPS is {source_fps}")
 
             if flag_do_crop:
-                ret_s = self.cropper.crop_source_video(source_rgb_lst, self.cropper.crop_cfg)
+                ret_s = crop_source_video_h(source_rgb_lst, self.crop_cfg, self.face_analyzer, self.landmark_runner)
                 log(f'Source video is cropped, {len(ret_s["frame_crop_lst"])} frames are processed.')
                 if len(ret_s["frame_crop_lst"]) != n_frames:
                     n_frames = min(len(source_rgb_lst), len(ret_s["frame_crop_lst"]))
                 img_crop_256x256_lst, source_lmk_crop_lst, source_M_c2o_lst = ret_s['frame_crop_lst'], ret_s['lmk_crop_lst'], ret_s['M_c2o_lst']
                 mask_ori_lst = [prepare_paste_back(inference_cfg.mask_crop, source_M_c2o, dsize=(source_rgb_lst[0].shape[1], source_rgb_lst[0].shape[0])) for source_M_c2o in source_M_c2o_lst]
             else:
-                source_lmk_crop_lst = self.cropper.calc_lmks_from_cropped_video(source_rgb_lst)
+                source_lmk_crop_lst = calc_lmks_from_cropped_video_h(source_rgb_lst, self.face_analyzer, self.landmark_runner, self.crop_cfg)
                 img_crop_256x256_lst = [cv2.resize(_, (256, 256)) for _ in source_rgb_lst]  # force to resize to 256x256
                 source_M_c2o_lst, mask_ori_lst = None, None
 
@@ -661,7 +668,7 @@ class GradioPipelineAnimal(LivePortraitPipelineAnimal):
             # update config from user input
             self.args = update_args(self.args, args_user)
             self.live_portrait_wrapper_animal.update_config(self.args.__dict__)
-            self.cropper.update_config(self.args.__dict__)
+            self.update_crop_config(self.args.__dict__)
             # video driven animation
             video_path, video_path_concat, video_gif_path = self.execute(self.args)
             gr.Info("Run successfully!", duration=2)

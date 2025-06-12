@@ -56,6 +56,11 @@ class LivePortraitPipelineAnimal(object):
         )
         self.xpose_runner.warmup()
 
+    def update_crop_config(self, user_args):
+        for k, v in user_args.items():
+            if hasattr(self.crop_cfg, k):
+                setattr(self.crop_cfg, k, v)
+
     def make_motion_template(self, I_lst, **kwargs):
         n_frames = I_lst.shape[0]
         template_dct = {
