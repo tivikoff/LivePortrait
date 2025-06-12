@@ -67,6 +67,9 @@ data_examples_i2v = [
     [osp.join(example_portrait_dir, "s40.jpg"), osp.join(example_video_dir, "d6.mp4"), True, False, False, False],
     [osp.join(example_portrait_dir, "s25.jpg"), osp.join(example_video_dir, "d19.mp4"), True, False, False, False],
 ]
+data_examples_v2v = [
+    [osp.join(example_portrait_dir, "s13.mp4"), osp.join(example_video_dir, "d6.mp4"), True, False, False, False],
+]
 data_examples_i2v_pickle = [
     [osp.join(example_portrait_dir, "s25.jpg"), osp.join(example_video_dir, "wink.pkl"), True, False, False, False],
     [osp.join(example_portrait_dir, "s40.jpg"), osp.join(example_video_dir, "talking.pkl"), True, False, False, False],
@@ -88,26 +91,44 @@ with gr.Blocks(theme=gr.themes.Soft(font=[gr.themes.GoogleFont("Plus Jakarta San
     gr.Markdown(load_description("assets/gradio/gradio_description_upload_animal.md"))
     with gr.Row():
         with gr.Column():
-            with gr.Accordion(open=True, label="🐱 Source Animal Image"):
-                source_image_input = gr.Image(type="filepath")
-                gr.Examples(
-                    examples=[
-                        [osp.join(example_portrait_dir, "s25.jpg")],
-                        [osp.join(example_portrait_dir, "s30.jpg")],
-                        [osp.join(example_portrait_dir, "s31.jpg")],
-                        [osp.join(example_portrait_dir, "s32.jpg")],
-                        [osp.join(example_portrait_dir, "s33.jpg")],
-                        [osp.join(example_portrait_dir, "s39.jpg")],
-                        [osp.join(example_portrait_dir, "s40.jpg")],
-                        [osp.join(example_portrait_dir, "s41.jpg")],
-                        [osp.join(example_portrait_dir, "s38.jpg")],
-                        [osp.join(example_portrait_dir, "s36.jpg")],
-                    ],
-                    inputs=[source_image_input],
-                    cache_examples=False,
-                )
+            with gr.Tabs():
+                with gr.TabItem("🐱 Source Animal Image") as s_tab_image:
+                    with gr.Accordion(open=True, label="Source Image"):
+                        source_image_input = gr.Image(type="filepath")
+                        gr.Examples(
+                            examples=[
+                                [osp.join(example_portrait_dir, "s25.jpg")],
+                                [osp.join(example_portrait_dir, "s30.jpg")],
+                                [osp.join(example_portrait_dir, "s31.jpg")],
+                                [osp.join(example_portrait_dir, "s32.jpg")],
+                                [osp.join(example_portrait_dir, "s33.jpg")],
+                                [osp.join(example_portrait_dir, "s39.jpg")],
+                                [osp.join(example_portrait_dir, "s40.jpg")],
+                                [osp.join(example_portrait_dir, "s41.jpg")],
+                                [osp.join(example_portrait_dir, "s38.jpg")],
+                                [osp.join(example_portrait_dir, "s36.jpg")],
+                            ],
+                            inputs=[source_image_input],
+                            cache_examples=False,
+                        )
+                with gr.TabItem("🎞️ Source Animal Video") as s_tab_video:
+                    with gr.Accordion(open=True, label="Source Video"):
+                        source_video_input = gr.Video()
+                        gr.Examples(
+                            examples=[
+                                [osp.join(example_portrait_dir, "s13.mp4")],
+                                [osp.join(example_portrait_dir, "s18.mp4")],
+                                [osp.join(example_portrait_dir, "s20.mp4")],
+                            ],
+                            inputs=[source_video_input],
+                            cache_examples=False,
+                        )
 
-            with gr.Accordion(open=True, label="Cropping Options for Source Image"):
+            s_tab_selection = gr.Textbox(visible=False)
+            s_tab_image.select(lambda: "Image", None, s_tab_selection)
+            s_tab_video.select(lambda: "Video", None, s_tab_selection)
+
+            with gr.Accordion(open=True, label="Cropping Options for Source Image or Video"):
                 with gr.Row():
                     flag_do_crop_input = gr.Checkbox(value=True, label="do crop (source)")
                     scale = gr.Number(value=2.3, label="source crop scale", minimum=1.8, maximum=3.2, step=0.05)
@@ -179,7 +200,7 @@ with gr.Blocks(theme=gr.themes.Soft(font=[gr.themes.GoogleFont("Plus Jakarta San
             with gr.Accordion(open=True, label="The animated video"):
                 output_video_concat_i2v.render()
     with gr.Row():
-        process_button_reset = gr.ClearButton([source_image_input, driving_video_input, output_video_i2v, output_video_concat_i2v, output_video_i2v_gif], value="🧹 Clear")
+        process_button_reset = gr.ClearButton([source_image_input, source_video_input, driving_video_input, output_video_i2v, output_video_concat_i2v, output_video_i2v_gif], value="🧹 Clear")
 
     with gr.Row():
         # Examples
@@ -218,11 +239,28 @@ with gr.Blocks(theme=gr.themes.Soft(font=[gr.themes.GoogleFont("Plus Jakarta San
                     examples_per_page=len(data_examples_i2v),
                     cache_examples=False,
                 )
+            with gr.TabItem("🎞️ Source Video") as tab_v2v:
+                gr.Examples(
+                    examples=data_examples_v2v,
+                    fn=gpu_wrapped_execute_video,
+                    inputs=[
+                        source_video_input,
+                        driving_video_input,
+                        flag_do_crop_input,
+                        flag_stitching,
+                        flag_remap_input,
+                        flag_crop_driving_video_input,
+                    ],
+                    outputs=[output_image, output_image_paste_back, output_video_i2v_gif],
+                    examples_per_page=len(data_examples_v2v),
+                    cache_examples=False,
+                )
 
     process_button_animation.click(
         fn=gpu_wrapped_execute_video,
         inputs=[
             source_image_input,
+            source_video_input,
             driving_video_input,
             driving_video_pickle_input,
             flag_do_crop_input,
@@ -236,6 +274,7 @@ with gr.Blocks(theme=gr.themes.Soft(font=[gr.themes.GoogleFont("Plus Jakarta San
             scale_crop_driving_video,
             vx_ratio_crop_driving_video,
             vy_ratio_crop_driving_video,
+            s_tab_selection,
             tab_selection,
         ],
         outputs=[output_video_i2v, output_video_concat_i2v, output_video_i2v_gif],
