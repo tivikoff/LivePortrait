@@ -21,7 +21,13 @@ from rich.progress import track
 from .config.argument_config import ArgumentConfig
 from .config.inference_config import InferenceConfig
 from .config.crop_config import CropConfig
-from .utils.cropper import Cropper
+from PIL import Image
+from .utils.animal_crop import (
+    crop_source_video,
+    crop_driving_video,
+    crop_source_image,
+)
+from .utils.animal_landmark_runner import XPoseRunner
 from .utils.camera import get_rotation_matrix
 from .utils.video import images2video, concat_frames, get_fps, add_audio_to_video, has_audio_stream, video2gif
 from .utils.crop import _transform_img, prepare_paste_back, paste_back
@@ -39,7 +45,16 @@ class LivePortraitPipelineAnimal(object):
 
     def __init__(self, inference_cfg: InferenceConfig, crop_cfg: CropConfig):
         self.live_portrait_wrapper_animal: LivePortraitWrapperAnimal = LivePortraitWrapperAnimal(inference_cfg=inference_cfg)
-        self.cropper: Cropper = Cropper(crop_cfg=crop_cfg, image_type='animal_face', flag_use_half_precision=inference_cfg.flag_use_half_precision)
+        self.crop_cfg = crop_cfg
+        self.xpose_runner = XPoseRunner(
+            model_config_path=crop_cfg.xpose_config_file_path,
+            model_checkpoint_path=crop_cfg.xpose_ckpt_path,
+            embeddings_cache_path=crop_cfg.xpose_embedding_cache_path,
+            flag_use_half_precision=inference_cfg.flag_use_half_precision,
+            device_id=crop_cfg.device_id,
+            cpu_only=crop_cfg.flag_force_cpu,
+        )
+        self.xpose_runner.warmup()
 
     def make_motion_template(self, I_lst, **kwargs):
         n_frames = I_lst.shape[0]
@@ -70,7 +85,7 @@ class LivePortraitPipelineAnimal(object):
         # for convenience
         inf_cfg = self.live_portrait_wrapper_animal.inference_cfg
         device = self.live_portrait_wrapper_animal.device
-        crop_cfg = self.cropper.crop_cfg
+        crop_cfg = self.crop_cfg
 
         ######## load source input ########
         flag_is_source_video = False
@@ -118,7 +133,7 @@ class LivePortraitPipelineAnimal(object):
             ######## make motion template ########
             log("Start making driving motion template...")
             if inf_cfg.flag_crop_driving_video:
-                ret_d = self.cropper.crop_driving_video(driving_rgb_lst)
+                ret_d = crop_driving_video(driving_rgb_lst, crop_cfg, self.xpose_runner)
                 log(f'Driving video is cropped, {len(ret_d["frame_crop_lst"])} frames are processed.')
                 if len(ret_d["frame_crop_lst"]) is not driving_n_frames:
                     driving_n_frames = min(driving_n_frames, len(ret_d["frame_crop_lst"]))
@@ -161,7 +176,7 @@ class LivePortraitPipelineAnimal(object):
         if flag_is_source_video:
             source_rgb_lst = source_rgb_lst[:n_frames]
             if inf_cfg.flag_do_crop:
-                ret_s = self.cropper.crop_source_video(source_rgb_lst, crop_cfg)
+                ret_s = crop_source_video(source_rgb_lst, crop_cfg, self.xpose_runner)
                 log(f'Source video is cropped, {len(ret_s["frame_crop_lst"])} frames are processed.')
                 if len(ret_s["frame_crop_lst"]) is not n_frames:
                     n_frames = min(n_frames, len(ret_s["frame_crop_lst"]))
@@ -189,7 +204,7 @@ class LivePortraitPipelineAnimal(object):
         else:
             img_rgb = source_rgb_lst[0]
             if inf_cfg.flag_do_crop:
-                crop_info = self.cropper.crop_source_image(img_rgb, crop_cfg)
+                crop_info = crop_source_image(img_rgb, crop_cfg, self.xpose_runner)
                 if crop_info is None:
                     raise Exception("No animal face detected in the source image!")
                 img_crop_256x256 = crop_info['img_crop_256x256']
