@@ -606,6 +606,7 @@ class GradioPipelineAnimal(LivePortraitPipelineAnimal):
     def execute_video(
         self,
         input_source_image_path=None,
+        input_source_video_path=None,
         input_driving_video_path=None,
         input_driving_video_pickle_path=None,
         flag_do_crop_input=False,
@@ -619,11 +620,15 @@ class GradioPipelineAnimal(LivePortraitPipelineAnimal):
         scale_crop_driving_video=2.2,
         vx_ratio_crop_driving_video=0.0,
         vy_ratio_crop_driving_video=-0.1,
+        tab_source_selection=None,
         tab_selection=None,
     ):
         """ for video-driven potrait animation
         """
-        input_source_path = input_source_image_path
+        if tab_source_selection == 'Video':
+            input_source_path = input_source_video_path
+        else:
+            input_source_path = input_source_image_path
 
         if tab_selection == 'Video':
             input_driving_path = input_driving_video_path
@@ -662,4 +667,4 @@ class GradioPipelineAnimal(LivePortraitPipelineAnimal):
             gr.Info("Run successfully!", duration=2)
             return video_path, video_path_concat, video_gif_path
         else:
-            raise gr.Error("Please upload the source animal image, and driving video 🤗🤗🤗", duration=5)
+            raise gr.Error("Please upload the source animal image/video, and driving video 🤗🤗🤗", duration=5)

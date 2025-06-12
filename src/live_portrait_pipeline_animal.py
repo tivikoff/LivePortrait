@@ -73,10 +73,19 @@ class LivePortraitPipelineAnimal(object):
         crop_cfg = self.cropper.crop_cfg
 
         ######## load source input ########
+        flag_is_source_video = False
+        source_fps = None
         if is_image(args.source):
             img_rgb = load_image_rgb(args.source)
             img_rgb = resize_to_limit(img_rgb, inf_cfg.source_max_dim, inf_cfg.source_division)
             log(f"Load source image from {args.source}")
+            source_rgb_lst = [img_rgb]
+        elif is_video(args.source):
+            flag_is_source_video = True
+            source_rgb_lst = load_video(args.source)
+            source_rgb_lst = [resize_to_limit(img, inf_cfg.source_max_dim, inf_cfg.source_division) for img in source_rgb_lst]
+            source_fps = int(get_fps(args.source))
+            log(f"Load source video from {args.source}. FPS is {source_fps}")
         else:  # source input is an unknown format
             raise Exception(f"Unknown source format: {args.source}")
 
@@ -89,7 +98,7 @@ class LivePortraitPipelineAnimal(object):
             # NOTE: load from template, it is fast, but the cropping video is None
             log(f"Load from template: {args.driving}, NOT the video, so the cropping video and audio are both NULL.", style='bold green')
             driving_template_dct = load(args.driving)
-            n_frames = driving_template_dct['n_frames']
+            driving_n_frames = driving_template_dct['n_frames']
 
             # set output_fps
             output_fps = driving_template_dct.get('output_fps', inf_cfg.output_fps)
@@ -104,15 +113,15 @@ class LivePortraitPipelineAnimal(object):
             log(f"Load driving video from: {args.driving}, FPS is {output_fps}")
 
             driving_rgb_lst = load_video(args.driving)
-            n_frames = len(driving_rgb_lst)
+            driving_n_frames = len(driving_rgb_lst)
 
             ######## make motion template ########
             log("Start making driving motion template...")
             if inf_cfg.flag_crop_driving_video:
                 ret_d = self.cropper.crop_driving_video(driving_rgb_lst)
                 log(f'Driving video is cropped, {len(ret_d["frame_crop_lst"])} frames are processed.')
-                if len(ret_d["frame_crop_lst"]) is not n_frames:
-                    n_frames = min(n_frames, len(ret_d["frame_crop_lst"]))
+                if len(ret_d["frame_crop_lst"]) is not driving_n_frames:
+                    driving_n_frames = min(driving_n_frames, len(ret_d["frame_crop_lst"]))
                 driving_rgb_crop_lst = ret_d['frame_crop_lst']
                 driving_rgb_crop_256x256_lst = [cv2.resize(_, (256, 256)) for _ in driving_rgb_crop_lst]
             else:
@@ -130,6 +139,18 @@ class LivePortraitPipelineAnimal(object):
         else:
             raise Exception(f"{args.driving} not exists or unsupported driving info types!")
 
+        driving_n_frames = driving_template_dct['n_frames']
+        flag_is_driving_video = True
+        if driving_n_frames <= 1:
+            flag_is_driving_video = False
+
+        if flag_is_source_video and flag_is_driving_video:
+            n_frames = min(len(source_rgb_lst), driving_n_frames)
+        elif flag_is_source_video and not flag_is_driving_video:
+            n_frames = len(source_rgb_lst)
+        else:
+            n_frames = driving_n_frames
+
         ######## prepare for pasteback ########
         I_p_pstbk_lst = None
         if inf_cfg.flag_pasteback and inf_cfg.flag_do_crop and inf_cfg.flag_stitching:
@@ -137,28 +158,67 @@ class LivePortraitPipelineAnimal(object):
             log("Prepared pasteback mask done.")
 
         ######## process source info ########
-        if inf_cfg.flag_do_crop:
-            crop_info = self.cropper.crop_source_image(img_rgb, crop_cfg)
-            if crop_info is None:
-                raise Exception("No animal face detected in the source image!")
-            img_crop_256x256 = crop_info['img_crop_256x256']
-        else:
-            img_crop_256x256 = cv2.resize(img_rgb, (256, 256))  # force to resize to 256x256
-        I_s = self.live_portrait_wrapper_animal.prepare_source(img_crop_256x256)
-        x_s_info = self.live_portrait_wrapper_animal.get_kp_info(I_s)
-        x_c_s = x_s_info['kp']
-        R_s = get_rotation_matrix(x_s_info['pitch'], x_s_info['yaw'], x_s_info['roll'])
-        f_s = self.live_portrait_wrapper_animal.extract_feature_3d(I_s)
-        x_s = self.live_portrait_wrapper_animal.transform_keypoint(x_s_info)
+        if flag_is_source_video:
+            source_rgb_lst = source_rgb_lst[:n_frames]
+            if inf_cfg.flag_do_crop:
+                ret_s = self.cropper.crop_source_video(source_rgb_lst, crop_cfg)
+                log(f'Source video is cropped, {len(ret_s["frame_crop_lst"])} frames are processed.')
+                if len(ret_s["frame_crop_lst"]) is not n_frames:
+                    n_frames = min(n_frames, len(ret_s["frame_crop_lst"]))
+                img_crop_256x256_lst = ret_s['frame_crop_lst']
+                source_M_c2o_lst = ret_s['M_c2o_lst']
+                if inf_cfg.flag_pasteback and inf_cfg.flag_stitching:
+                    mask_ori_lst = [prepare_paste_back(inf_cfg.mask_crop, M_c2o, dsize=(source_rgb_lst[i].shape[1], source_rgb_lst[i].shape[0])) for i, M_c2o in enumerate(source_M_c2o_lst)]
+                else:
+                    mask_ori_lst = None
+            else:
+                img_crop_256x256_lst = [cv2.resize(_, (256, 256)) for _ in source_rgb_lst]
+                source_M_c2o_lst, mask_ori_lst = None, None
 
-        if inf_cfg.flag_pasteback and inf_cfg.flag_do_crop and inf_cfg.flag_stitching:
-            mask_ori_float = prepare_paste_back(inf_cfg.mask_crop, crop_info['M_c2o'], dsize=(img_rgb.shape[1], img_rgb.shape[0]))
+            I_s_lst = self.live_portrait_wrapper_animal.prepare_videos(img_crop_256x256_lst)
+            f_s_lst, x_s_info_lst, x_s_lst = [], [], []
+            for i in range(n_frames):
+                I_s = I_s_lst[i]
+                f_s = self.live_portrait_wrapper_animal.extract_feature_3d(I_s)
+                x_s_info = self.live_portrait_wrapper_animal.get_kp_info(I_s)
+                x_s_info['R'] = get_rotation_matrix(x_s_info['pitch'], x_s_info['yaw'], x_s_info['roll'])
+                x_s = self.live_portrait_wrapper_animal.transform_keypoint(x_s_info)
+                f_s_lst.append(f_s)
+                x_s_info_lst.append(x_s_info)
+                x_s_lst.append(x_s)
+        else:
+            img_rgb = source_rgb_lst[0]
+            if inf_cfg.flag_do_crop:
+                crop_info = self.cropper.crop_source_image(img_rgb, crop_cfg)
+                if crop_info is None:
+                    raise Exception("No animal face detected in the source image!")
+                img_crop_256x256 = crop_info['img_crop_256x256']
+            else:
+                img_crop_256x256 = cv2.resize(img_rgb, (256, 256))  # force to resize to 256x256
+            I_s = self.live_portrait_wrapper_animal.prepare_source(img_crop_256x256)
+            x_s_info = self.live_portrait_wrapper_animal.get_kp_info(I_s)
+            x_c_s = x_s_info['kp']
+            f_s = self.live_portrait_wrapper_animal.extract_feature_3d(I_s)
+            x_s = self.live_portrait_wrapper_animal.transform_keypoint(x_s_info)
+            if inf_cfg.flag_pasteback and inf_cfg.flag_do_crop and inf_cfg.flag_stitching:
+                mask_ori_float = prepare_paste_back(inf_cfg.mask_crop, crop_info['M_c2o'], dsize=(img_rgb.shape[1], img_rgb.shape[0]))
 
         ######## animate ########
         I_p_lst = []
         for i in track(range(n_frames), description='🚀Animating...', total=n_frames):
 
-            x_d_i_info = driving_template_dct['motion'][i]
+            if flag_is_source_video:
+                x_s_info = x_s_info_lst[i]
+                x_c_s = x_s_info['kp']
+                f_s = f_s_lst[i]
+                x_s = x_s_lst[i]
+            else:
+                pass
+
+            if flag_is_source_video and not flag_is_driving_video:
+                x_d_i_info = driving_template_dct['motion'][0]
+            else:
+                x_d_i_info = driving_template_dct['motion'][i]
             x_d_i_info = dct2device(x_d_i_info, device)
 
             R_d_i = x_d_i_info['R'] if 'R' in x_d_i_info.keys() else x_d_i_info['R_d']  # compatible with previous keys
@@ -176,9 +236,7 @@ class LivePortraitPipelineAnimal(object):
             x_d_diff = (x_d_i - x_d_0) * motion_multiplier
             x_d_i = x_d_diff + x_s
 
-            if not inf_cfg.flag_stitching:
-                pass
-            else:
+            if inf_cfg.flag_stitching:
                 x_d_i = self.live_portrait_wrapper_animal.stitching(x_s, x_d_i)
 
             x_d_i = x_s + (x_d_i - x_s) * inf_cfg.driving_multiplier
@@ -187,7 +245,10 @@ class LivePortraitPipelineAnimal(object):
             I_p_lst.append(I_p_i)
 
             if inf_cfg.flag_pasteback and inf_cfg.flag_do_crop and inf_cfg.flag_stitching:
-                I_p_pstbk = paste_back(I_p_i, crop_info['M_c2o'], img_rgb, mask_ori_float)
+                if flag_is_source_video and mask_ori_lst is not None:
+                    I_p_pstbk = paste_back(I_p_i, source_M_c2o_lst[i], source_rgb_lst[i], mask_ori_lst[i])
+                else:
+                    I_p_pstbk = paste_back(I_p_i, crop_info['M_c2o'], img_rgb, mask_ori_float)
                 I_p_pstbk_lst.append(I_p_pstbk)
 
         mkdir(args.output_dir)
@@ -195,10 +256,20 @@ class LivePortraitPipelineAnimal(object):
         flag_driving_has_audio = (not flag_load_from_template) and has_audio_stream(args.driving)
 
         ######### build the final concatenation result #########
-        # driving frame | source image | generation
-        frames_concatenated = concat_frames(driving_rgb_crop_256x256_lst, [img_crop_256x256], I_p_lst)
+        # driving frame | source frame | generation
+        if flag_is_source_video and flag_is_driving_video:
+            frames_concatenated = concat_frames(driving_rgb_crop_256x256_lst, img_crop_256x256_lst, I_p_lst)
+        elif flag_is_source_video and not flag_is_driving_video:
+            if flag_load_from_template:
+                frames_concatenated = concat_frames(driving_rgb_crop_256x256_lst, img_crop_256x256_lst, I_p_lst)
+            else:
+                frames_concatenated = concat_frames(driving_rgb_crop_256x256_lst * n_frames, img_crop_256x256_lst, I_p_lst)
+        else:
+            frames_concatenated = concat_frames(driving_rgb_crop_256x256_lst, [img_crop_256x256], I_p_lst)
+
         wfp_concat = osp.join(args.output_dir, f'{basename(args.source)}--{basename(args.driving)}_concat.mp4')
-        images2video(frames_concatenated, wfp=wfp_concat, fps=output_fps)
+        output_fps_final = source_fps if flag_is_source_video else output_fps
+        images2video(frames_concatenated, wfp=wfp_concat, fps=output_fps_final)
 
         if flag_driving_has_audio:
             # final result with concatenation
@@ -211,9 +282,9 @@ class LivePortraitPipelineAnimal(object):
         # save the animated result
         wfp = osp.join(args.output_dir, f'{basename(args.source)}--{basename(args.driving)}.mp4')
         if I_p_pstbk_lst is not None and len(I_p_pstbk_lst) > 0:
-            images2video(I_p_pstbk_lst, wfp=wfp, fps=output_fps)
+            images2video(I_p_pstbk_lst, wfp=wfp, fps=output_fps_final)
         else:
-            images2video(I_p_lst, wfp=wfp, fps=output_fps)
+            images2video(I_p_lst, wfp=wfp, fps=output_fps_final)
 
         ######### build the final result #########
         if flag_driving_has_audio:
